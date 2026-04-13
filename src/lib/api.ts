@@ -1,6 +1,7 @@
 import axios, { AxiosError } from "axios"
 
-const ADMIN_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
+const ADMIN_BASE =
+  process.env.NEXT_PUBLIC_API_URL ?? "https://social-api.stepup.com.tr"
 
 const api = axios.create({
   baseURL: `${ADMIN_BASE}/admin/api/v1`,
