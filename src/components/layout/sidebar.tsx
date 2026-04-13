@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { LayoutDashboard, Users, LogOut, Shield, X } from "lucide-react"
+import { LayoutDashboard, Users, LogOut, Shield, X, Activity } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { useLogout } from "@/hooks/use-auth"
@@ -11,6 +11,7 @@ import { useState } from "react"
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/users", label: "Users", icon: Users },
+  { href: "/monitoring", label: "Monitoring", icon: Activity },
 ]
 
 export function Sidebar() {
