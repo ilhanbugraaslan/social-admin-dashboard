@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation"
 import { LayoutDashboard, Users, LogOut, Shield, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { useAdminAuth } from "@/hooks/use-auth"
+import { useLogout } from "@/hooks/use-auth"
 import { useState } from "react"
 
 const navItems = [
@@ -15,7 +15,7 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname()
-  const { logout } = useAdminAuth()
+  const logout = useLogout()
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (

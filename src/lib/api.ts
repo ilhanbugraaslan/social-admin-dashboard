@@ -30,7 +30,8 @@ api.interceptors.response.use(
     return res
   },
   (err: AxiosError) => {
-    if (err.response?.status === 401 && typeof window !== "undefined") {
+    const isLoginEndpoint = err.config?.url?.includes("/auth/login")
+    if (err.response?.status === 401 && !isLoginEndpoint && typeof window !== "undefined") {
       clearToken()
       window.location.href = "/login"
     }

@@ -25,3 +25,11 @@ export function useAdminAuth() {
 
   return { authenticated, logout }
 }
+
+export function useLogout() {
+  const router = useRouter()
+  return function logout() {
+    clearToken()
+    router.push("/login")
+  }
+}
