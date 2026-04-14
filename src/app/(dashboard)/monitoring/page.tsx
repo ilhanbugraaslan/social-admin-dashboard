@@ -43,8 +43,9 @@ const services = [
     icon: Server,
     checks: [
       { label: "HTTP", url: `${BASE}/health` },
-      { label: "Database", url: `${BASE}/health/db`, icon: Database },
-      { label: "Redis", url: `${BASE}/health/redis`, icon: Wifi },
+      { label: "Database", url: `${BASE}/health/db` },
+      { label: "Redis", url: `${BASE}/health/redis` },
+      { label: "ClickHouse", url: `${BASE}/health/clickhouse` },
     ],
   },
   {
@@ -53,7 +54,15 @@ const services = [
     icon: RefreshCw,
     checks: [
       { label: "HTTP", url: `${BASE}/admin/api/v1/health/redirect` },
-      { label: "Redis", url: `${BASE}/admin/api/v1/health/redirect/redis`, icon: Wifi },
+      { label: "Redis", url: `${BASE}/admin/api/v1/health/redirect/redis` },
+    ],
+  },
+  {
+    id: "worker",
+    label: "Worker",
+    icon: Database,
+    checks: [
+      { label: "HTTP", url: `${BASE}/admin/api/v1/health/worker` },
     ],
   },
 ]
