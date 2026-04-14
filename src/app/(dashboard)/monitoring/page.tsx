@@ -68,12 +68,35 @@ const services = [
 ]
 
 function formatDuration(ms: number): string {
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${s % 60}s`
+  const m = Math.floor(ms / 60_000)
+  if (m < 1) return "< 1m"
+  if (m < 60) return `${m}m`
   const h = Math.floor(m / 60)
   return `${h}h ${m % 60}m`
+}
+
+const STORAGE_KEY = "svc_uptime_v1"
+
+interface UptimeRecord {
+  upCount: number
+  totalCount: number
+  lastDownAt: number | null // ms timestamp, null = never been down
+  startedAt: number         // ms timestamp of first recorded check
+}
+
+function loadUptime(): Record<string, UptimeRecord> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveUptime(data: Record<string, UptimeRecord>) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  } catch { /* ignore quota errors */ }
 }
 
 function StatusBadge({ status }: { status: HealthResult["status"] }) {
@@ -108,10 +131,13 @@ export default function MonitoringPage() {
   const [now, setNow] = useState(new Date())
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
 
-  // Uptime tracking per service
-  const historyRef = useRef<Record<string, boolean[]>>({})
-  const lastDownRef = useRef<Record<string, number | null>>({})
-  const pageStartRef = useRef(Date.now())
+  // Uptime tracking — persisted in localStorage
+  const uptimeRef = useRef<Record<string, UptimeRecord>>({})
+
+  // Load persisted uptime on mount
+  useEffect(() => {
+    uptimeRef.current = loadUptime()
+  }, [])
 
   // Tick the clock every second
   useEffect(() => {
@@ -158,31 +184,40 @@ export default function MonitoringPage() {
     return { ...svc, rows, isLoading, overallOk }
   })
 
-  // Record a history sample whenever all queries have settled
+  // Record a sample whenever all queries have settled, persist to localStorage
   const queryUpdateKey = healthQueries.map((q) => q.result.dataUpdatedAt).join(",")
   useEffect(() => {
+    let changed = false
     byService.forEach((svc) => {
       if (svc.isLoading) return
-      if (!historyRef.current[svc.id]) historyRef.current[svc.id] = []
-      const h = historyRef.current[svc.id]
-      h.push(svc.overallOk)
-      if (h.length > 180) h.shift() // keep ~30 min at 10s interval
-      if (!svc.overallOk) {
-        lastDownRef.current[svc.id] = Date.now()
-      } else if (!(svc.id in lastDownRef.current)) {
-        lastDownRef.current[svc.id] = null
+      const now = Date.now()
+      const existing = uptimeRef.current[svc.id]
+      if (!existing) {
+        uptimeRef.current[svc.id] = {
+          upCount: svc.overallOk ? 1 : 0,
+          totalCount: 1,
+          lastDownAt: svc.overallOk ? null : now,
+          startedAt: now,
+        }
+      } else {
+        existing.totalCount += 1
+        if (svc.overallOk) {
+          existing.upCount += 1
+        } else {
+          existing.lastDownAt = now
+        }
       }
+      changed = true
     })
+    if (changed) saveUptime(uptimeRef.current)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryUpdateKey])
 
   function getUptime(serviceId: string): { percent: string; duration: string } | null {
-    const h = historyRef.current[serviceId]
-    if (!h || h.length < 2) return null
-    const upCount = h.filter(Boolean).length
-    const pct = (upCount / h.length) * 100
-    const lastDown = lastDownRef.current[serviceId]
-    const since = lastDown != null ? lastDown : pageStartRef.current
+    const r = uptimeRef.current[serviceId]
+    if (!r || r.totalCount < 2) return null
+    const pct = (r.upCount / r.totalCount) * 100
+    const since = r.lastDownAt ?? r.startedAt
     return {
       percent: pct.toFixed(1) + "%",
       duration: formatDuration(now.getTime() - since),
