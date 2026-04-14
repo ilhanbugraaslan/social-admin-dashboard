@@ -1,9 +1,9 @@
 "use client"
 
 import { useQuery } from "@tanstack/react-query"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import axios from "axios"
-import { CheckCircle, XCircle, RefreshCw, Clock, Database, Server, Wifi } from "lucide-react"
+import { CheckCircle, XCircle, RefreshCw, Clock, Database, Server } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -39,7 +39,7 @@ async function fetchHealth(url: string): Promise<HealthResult> {
 const services = [
   {
     id: "api",
-    label: "Core API",
+    label: "Core API Backend",
     icon: Server,
     checks: [
       { label: "HTTP", url: `${BASE}/health` },
@@ -59,13 +59,22 @@ const services = [
   },
   {
     id: "worker",
-    label: "Worker",
+    label: "Worker Service",
     icon: Database,
     checks: [
       { label: "HTTP", url: `${BASE}/admin/api/v1/health/worker` },
     ],
   },
 ]
+
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
+}
 
 function StatusBadge({ status }: { status: HealthResult["status"] }) {
   if (status === "loading") return <Badge variant="secondary">checking…</Badge>
@@ -98,6 +107,11 @@ function HealthRow({ label, result }: { label: string; result: HealthResult }) {
 export default function MonitoringPage() {
   const [now, setNow] = useState(new Date())
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
+
+  // Uptime tracking per service
+  const historyRef = useRef<Record<string, boolean[]>>({})
+  const lastDownRef = useRef<Record<string, number | null>>({})
+  const pageStartRef = useRef(Date.now())
 
   // Tick the clock every second
   useEffect(() => {
@@ -137,13 +151,43 @@ export default function MonitoringPage() {
   }
 
   // Group health results by service
-  const byService = services.map((svc) => ({
-    ...svc,
-    rows: healthQueries.filter((q) => q.serviceId === svc.id),
-    overallOk: healthQueries
-      .filter((q) => q.serviceId === svc.id)
-      .every((q) => q.result.data?.status === "ok"),
-  }))
+  const byService = services.map((svc) => {
+    const rows = healthQueries.filter((q) => q.serviceId === svc.id)
+    const isLoading = rows.some((r) => r.result.data?.status === "loading")
+    const overallOk = rows.every((r) => r.result.data?.status === "ok")
+    return { ...svc, rows, isLoading, overallOk }
+  })
+
+  // Record a history sample whenever all queries have settled
+  const queryUpdateKey = healthQueries.map((q) => q.result.dataUpdatedAt).join(",")
+  useEffect(() => {
+    byService.forEach((svc) => {
+      if (svc.isLoading) return
+      if (!historyRef.current[svc.id]) historyRef.current[svc.id] = []
+      const h = historyRef.current[svc.id]
+      h.push(svc.overallOk)
+      if (h.length > 180) h.shift() // keep ~30 min at 10s interval
+      if (!svc.overallOk) {
+        lastDownRef.current[svc.id] = Date.now()
+      } else if (!(svc.id in lastDownRef.current)) {
+        lastDownRef.current[svc.id] = null
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryUpdateKey])
+
+  function getUptime(serviceId: string): { percent: string; duration: string } | null {
+    const h = historyRef.current[serviceId]
+    if (!h || h.length < 2) return null
+    const upCount = h.filter(Boolean).length
+    const pct = (upCount / h.length) * 100
+    const lastDown = lastDownRef.current[serviceId]
+    const since = lastDown != null ? lastDown : pageStartRef.current
+    return {
+      percent: pct.toFixed(1) + "%",
+      duration: formatDuration(now.getTime() - since),
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -173,6 +217,8 @@ export default function MonitoringPage() {
       <div className="grid gap-4 md:grid-cols-2">
         {byService.map((svc) => {
           const Icon = svc.icon
+          const uptime = getUptime(svc.id)
+          const overallStatus = svc.isLoading ? "loading" : svc.overallOk ? "ok" : "error"
           return (
             <Card key={svc.id}>
               <CardHeader className="pb-3">
@@ -181,15 +227,22 @@ export default function MonitoringPage() {
                     <Icon className="h-4 w-4" />
                     {svc.label}
                   </div>
-                  <StatusBadge
-                    status={
-                      svc.rows.some((r) => r.result.data?.status === "loading")
-                        ? "loading"
-                        : svc.overallOk
-                        ? "ok"
-                        : "error"
-                    }
-                  />
+                  <div className="flex items-center gap-2">
+                    {uptime && (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span className={cn(
+                          "tabular-nums font-medium",
+                          parseFloat(uptime.percent) >= 99 ? "text-emerald-600" :
+                          parseFloat(uptime.percent) >= 90 ? "text-yellow-600" : "text-red-600"
+                        )}>
+                          {uptime.percent}
+                        </span>
+                        <span>·</span>
+                        <span>↑ {uptime.duration}</span>
+                      </div>
+                    )}
+                    <StatusBadge status={overallStatus} />
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent>
