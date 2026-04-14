@@ -52,8 +52,8 @@ const services = [
     label: "Redirect Service",
     icon: RefreshCw,
     checks: [
-      { label: "HTTP", url: "https://social.stepup.com.tr/health" },
-      { label: "Redis", url: "https://social.stepup.com.tr/health/redis", icon: Wifi },
+      { label: "HTTP", url: `${BASE}/admin/api/v1/health/redirect` },
+      { label: "Redis", url: `${BASE}/admin/api/v1/health/redirect/redis`, icon: Wifi },
     ],
   },
 ]
