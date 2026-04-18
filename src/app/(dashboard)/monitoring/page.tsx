@@ -1,14 +1,14 @@
 "use client"
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { useState, useEffect, useRef } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useState, useEffect } from "react"
 import axios from "axios"
 import { CheckCircle, XCircle, RefreshCw, Clock, Database, Server, ChevronDown, ChevronUp } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import api, { getToken } from "@/lib/api"
+import api from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "https://social-api.stepup.com.tr"
@@ -152,7 +152,6 @@ export default function MonitoringPage() {
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const qc = useQueryClient()
-  const uptimeDisabled = useRef(false)
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000)
@@ -181,18 +180,6 @@ export default function MonitoringPage() {
     refetchInterval: 30_000,
   })
 
-  // Record uptime — stops on 401 to prevent flood
-  const recordUptime = useMutation({
-    mutationFn: (body: { service_id: string; up: boolean }) => api.post("/uptime", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "uptime"] }),
-    onError: (err) => {
-      if (axios.isAxiosError(err) && err.response?.status === 401) {
-        uptimeDisabled.current = true
-      }
-    },
-    retry: false,
-  })
-
   const { data: stats, dataUpdatedAt, refetch: refetchStats, isFetching } = useQuery<Stats>({
     queryKey: ["admin", "stats"],
     queryFn: () => api.get<Stats>("/stats").then((r) => r.data),
@@ -210,17 +197,6 @@ export default function MonitoringPage() {
     return { ...svc, rows, isLoading, overallOk }
   })
 
-  // Send uptime sample — skip if auth failed (prevents 401 flood)
-  const queryUpdateKey = healthQueries.map((q) => q.result.dataUpdatedAt).join(",")
-  useEffect(() => {
-    if (uptimeDisabled.current || !getToken()) return
-    byService.forEach((svc) => {
-      if (svc.isLoading) return
-      recordUptime.mutate({ service_id: svc.id, up: svc.overallOk })
-    })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryUpdateKey])
-
   function getUptime(serviceId: string) {
     const r = uptimeRecords?.find((u) => u.service_id === serviceId)
     if (!r || r.total_count < 2) return null
@@ -234,7 +210,6 @@ export default function MonitoringPage() {
   }
 
   function handleRefresh() {
-    uptimeDisabled.current = false // reset on manual refresh
     refetchStats()
     healthQueries.forEach((q) => q.result.refetch())
     qc.invalidateQueries({ queryKey: ["admin", "uptime"] })
