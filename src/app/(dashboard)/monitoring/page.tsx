@@ -1,14 +1,14 @@
 "use client"
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import axios from "axios"
 import { CheckCircle, XCircle, RefreshCw, Clock, Database, Server, ChevronDown, ChevronUp } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import api from "@/lib/api"
+import api, { getToken } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "https://social-api.stepup.com.tr"
@@ -36,11 +36,25 @@ interface UptimeRecord {
   history: HistoryPoint[]
 }
 
-async function fetchHealth(url: string): Promise<HealthResult> {
+// Public health check (no auth needed — load balancer probe only)
+async function fetchHealthPublic(url: string): Promise<HealthResult> {
   const start = Date.now()
   try {
     const res = await axios.get(url, { timeout: 5000 })
     return { status: res.data?.status === "ok" ? "ok" : "error", latency_ms: Date.now() - start }
+  } catch {
+    return { status: "error", latency_ms: Date.now() - start }
+  }
+}
+
+// Authenticated health check (via admin API)
+async function fetchHealthAuth(path: string): Promise<HealthResult> {
+  const start = Date.now()
+  try {
+    const res = await api.get(path, { timeout: 5000 })
+    const d = res.data
+    const status = d?.status === "ok" ? "ok" as const : "error" as const
+    return { status, latency_ms: d?.latency_ms ?? (Date.now() - start) }
   } catch {
     return { status: "error", latency_ms: Date.now() - start }
   }
@@ -54,16 +68,22 @@ function formatDuration(ms: number): string {
   return `${h}h ${m % 60}m`
 }
 
-const services = [
+interface Check {
+  label: string
+  auth: boolean        // true → use admin API, false → public endpoint
+  urlOrPath: string    // full URL if !auth, admin-relative path if auth
+}
+
+const services: { id: string; label: string; icon: typeof Server; checks: Check[] }[] = [
   {
     id: "api",
     label: "Core API Backend",
     icon: Server,
     checks: [
-      { label: "HTTP",       url: `${BASE}/health` },
-      { label: "Database",   url: `${BASE}/health/db` },
-      { label: "Redis",      url: `${BASE}/health/redis` },
-      { label: "ClickHouse", url: `${BASE}/health/clickhouse` },
+      { label: "HTTP",       auth: false, urlOrPath: `${BASE}/health` },
+      { label: "Database",   auth: true,  urlOrPath: "/health/db" },
+      { label: "Redis",      auth: true,  urlOrPath: "/health/redis" },
+      { label: "ClickHouse", auth: true,  urlOrPath: "/health/clickhouse" },
     ],
   },
   {
@@ -71,8 +91,8 @@ const services = [
     label: "Redirect Service",
     icon: RefreshCw,
     checks: [
-      { label: "HTTP",  url: `${BASE}/admin/api/v1/health/redirect` },
-      { label: "Redis", url: `${BASE}/admin/api/v1/health/redirect/redis` },
+      { label: "HTTP",  auth: true, urlOrPath: "/health/redirect" },
+      { label: "Redis", auth: true, urlOrPath: "/health/redirect/redis" },
     ],
   },
   {
@@ -80,12 +100,11 @@ const services = [
     label: "Worker Service",
     icon: Database,
     checks: [
-      { label: "HTTP", url: `${BASE}/admin/api/v1/health/worker` },
+      { label: "HTTP", auth: true, urlOrPath: "/health/worker" },
     ],
   },
 ]
 
-// 90-block history bar like OpenAI status page
 function UptimeBar({ history }: { history: HistoryPoint[] }) {
   const BAR_SIZE = 90
   const blocks = Array.from({ length: BAR_SIZE }, (_, i) => {
@@ -133,21 +152,22 @@ export default function MonitoringPage() {
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const qc = useQueryClient()
+  const uptimeDisabled = useRef(false)
 
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(t)
   }, [])
 
-  // Health checks every 10s
+  // Health checks every 10s — picks authed or public fetcher per check
   const healthQueries = services.flatMap((svc) =>
     svc.checks.map((check) => ({
       serviceId: svc.id,
       label: check.label,
       // eslint-disable-next-line react-hooks/rules-of-hooks
       result: useQuery<HealthResult>({
-        queryKey: ["health", check.url],
-        queryFn: () => fetchHealth(check.url),
+        queryKey: ["health", check.urlOrPath],
+        queryFn: () => check.auth ? fetchHealthAuth(check.urlOrPath) : fetchHealthPublic(check.urlOrPath),
         refetchInterval: 10_000,
         placeholderData: { status: "loading" },
       }),
@@ -161,9 +181,16 @@ export default function MonitoringPage() {
     refetchInterval: 30_000,
   })
 
+  // Record uptime — stops on 401 to prevent flood
   const recordUptime = useMutation({
     mutationFn: (body: { service_id: string; up: boolean }) => api.post("/uptime", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "uptime"] }),
+    onError: (err) => {
+      if (axios.isAxiosError(err) && err.response?.status === 401) {
+        uptimeDisabled.current = true
+      }
+    },
+    retry: false,
   })
 
   const { data: stats, dataUpdatedAt, refetch: refetchStats, isFetching } = useQuery<Stats>({
@@ -183,8 +210,10 @@ export default function MonitoringPage() {
     return { ...svc, rows, isLoading, overallOk }
   })
 
+  // Send uptime sample — skip if auth failed (prevents 401 flood)
   const queryUpdateKey = healthQueries.map((q) => q.result.dataUpdatedAt).join(",")
   useEffect(() => {
+    if (uptimeDisabled.current || !getToken()) return
     byService.forEach((svc) => {
       if (svc.isLoading) return
       recordUptime.mutate({ service_id: svc.id, up: svc.overallOk })
@@ -205,6 +234,7 @@ export default function MonitoringPage() {
   }
 
   function handleRefresh() {
+    uptimeDisabled.current = false // reset on manual refresh
     refetchStats()
     healthQueries.forEach((q) => q.result.refetch())
     qc.invalidateQueries({ queryKey: ["admin", "uptime"] })
@@ -212,7 +242,6 @@ export default function MonitoringPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">System Status</h1>
@@ -230,15 +259,14 @@ export default function MonitoringPage() {
         </div>
       </div>
 
-      {/* OpenAI-style service status list */}
       <div className="border rounded-xl divide-y overflow-hidden">
         {byService.map((svc) => {
+          const Icon = svc.icon
           const uptime = getUptime(svc.id)
           const overallOk = svc.isLoading ? null : svc.overallOk
           const isOpen = expanded[svc.id]
           return (
             <div key={svc.id} className="p-4 space-y-3 bg-card">
-              {/* Service row */}
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-2.5 min-w-0">
                   {overallOk === null ? (
@@ -267,21 +295,18 @@ export default function MonitoringPage() {
                 </span>
               </div>
 
-              {/* History bar */}
               <UptimeBar history={uptime?.history ?? []} />
 
-              {/* Timestamp range label */}
               <div className="flex justify-between text-[11px] text-muted-foreground">
                 <span>
-                  {uptime
-                    ? new Date(uptimeRecords!.find(u => u.service_id === svc.id)!.started_at).toLocaleDateString()
+                  {uptime && uptimeRecords
+                    ? new Date(uptimeRecords.find(u => u.service_id === svc.id)!.started_at).toLocaleDateString()
                     : "—"}
                 </span>
                 <span>↑ {uptime?.duration ?? "—"} continuous</span>
                 <span>Now</span>
               </div>
 
-              {/* Expandable check details */}
               {isOpen && (
                 <div className="pt-1 border-t divide-y">
                   {svc.rows.map((row) => (
@@ -298,7 +323,6 @@ export default function MonitoringPage() {
         })}
       </div>
 
-      {/* Live stats */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Platform Stats (live)</CardTitle>
